@@ -9,13 +9,14 @@ from odds import fetch_draftkings
 from analysis import analyze,parlays
 from cfbd_data import download_history
 from predictor import fit_models,evaluate
+from market_model import train_and_evaluate, predict_upcoming
 from joblib import dump
 import tempfile
 
 st.set_page_config(page_title='CFB Prediction Center',layout='wide')
 st.title('🏈 CFB Prediction Center')
 st.caption('DraftKings line comparison • model research tool • no bets placed')
-st.warning('The baseline model is NOT calibrated or validated for wagering. Estimated edges and parlay probabilities are experimental, not recommendations.')
+st.warning('Research prototype: cover probabilities are approximate, parlay outcomes may be correlated, and no profitable betting edge has been established.')
 with st.sidebar:
     st.header('Data & model')
     historical=st.file_uploader('Completed games CSV',type='csv')
@@ -26,7 +27,7 @@ with st.sidebar:
     odds_file=st.file_uploader('Odds CSV',type='csv') if source.startswith('Upload') else None
     api_key=st.text_input('The Odds API key',type='password',value=os.getenv('THE_ODDS_API_KEY','')) if source.startswith('DraftKings') else None
     min_edge=st.slider('Minimum estimated probability edge',0.,.20,.03,.005)
-    st.caption('Team names must match exactly across datasets; timestamps are UTC.')
+    st.caption('Team names must match exactly across datasets; timestamps are UTC. Historical and current odds may differ by provider/time.')
 
 st.subheader('Historical data and model training')
 try:
@@ -47,10 +48,12 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
             if train.sum()<100 or test.sum()<10:raise ValueError('Not enough historical games to train/test.')
             backtest_model=fit_models(X.loc[train],details.loc[train])
             metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
-            final_model=fit_models(X,details)
+            final_model, yearly_metrics, test_predictions=train_and_evaluate(X,details)
             st.session_state['history_auto']=history
             st.session_state['model_auto']=final_model
             st.session_state['training_metrics']=metrics
+            st.session_state['v4_metrics']=yearly_metrics
+            st.session_state['v4_holdout']=test_predictions
             st.session_state['download_report']=report
         status.success('History downloaded and model trained. This is a research baseline, not a validated betting edge.')
     except Exception as exc:
@@ -58,6 +61,10 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
 if 'training_metrics' in st.session_state:
     st.write('Held-out 2025 evaluation (trained on earlier seasons):',st.session_state['training_metrics'])
     st.write('Download coverage:',st.session_state['download_report'])
+    st.subheader('V4 market-relative season-forward evaluation')
+    st.caption('2025 was not used for model fitting or probability dispersion. Earlier seasons are diagnostic, not independent untouched tests.')
+    st.dataframe(pd.json_normalize(st.session_state['v4_metrics']),use_container_width=True,hide_index=True)
+    st.download_button('Download V4 2025 holdout predictions',st.session_state['v4_holdout'].to_csv(index=False),'v4_holdout_2025.csv','text/csv')
     st.download_button('Download historical games CSV',st.session_state['history_auto'].to_csv(index=False),'cfb_games.csv','text/csv')
     with tempfile.NamedTemporaryFile(suffix='.joblib') as tmp:
         dump(st.session_state['model_auto'],tmp.name)
@@ -94,14 +101,14 @@ if (historical and model_file or ('history_auto' in st.session_state and 'model_
             st.error('Upcoming games overlap or predate the last historical result. Use a strictly pregame history snapshot.')
             st.stop()
         X=build_features(games,future)
-        pred=predictions(model,X,future)
+        pred=predict_upcoming(model,X,future) if model.get('type')=='market_residual_v4' else predictions(model,X,future)
         # For API timestamps use the date component consistently; do not mix local calendar dates.
         ranked=analyze(pred,odds)
         if ranked.empty:
             st.error('No matching games. Check exact team names, game dates, and spreads.')
         else:
             st.subheader('Model vs. DraftKings — research ranking')
-            st.caption('Probabilities approximate and uncalibrated; do not treat ranking as proven betting edge.')
+            st.caption('Probabilities are approximate and not externally calibrated. No positive expected return is established.')
             st.dataframe(ranked,hide_index=True,use_container_width=True)
             st.download_button('Download matchup analysis',ranked.to_csv(index=False),'weekly_analysis.csv','text/csv')
             st.subheader('Hypothetical 2- and 3-leg combinations')

@@ -137,3 +137,51 @@ if (historical and model_file or ('history_auto' in st.session_state and 'model_
 else:
     st.info('Upload completed-game history and a trained model, then fetch or upload DraftKings odds to analyze the slate.')
     st.markdown('**Weekly workflow:** refresh completed games → retrain/backtest outside the dashboard → fetch DraftKings lines → review matchups → export report. Verify injury and lineup news manually.')
+# --- Version 7: CFBD advanced data access diagnostic ---
+# Paste this block at the bottom of dashboard.py. Uses existing Streamlit secrets.
+import requests as _cfbd_requests
+
+with st.expander('Version 7 — Check advanced CFBD API access', expanded=False):
+    st.caption('Runs three small 2024 sample requests. Does not display or save your API key.')
+    if st.button('Check advanced data access', key='cfbd_v7_access_button'):
+        _key = st.secrets.get('CFBD_API_KEY', '')
+        if not _key:
+            st.error('CFBD_API_KEY is missing from Streamlit secrets.')
+        else:
+            _tests = [
+                ('Advanced game stats', '/stats/game/advanced', {'year': 2024, 'week': 1, 'team': 'Michigan'}),
+                ('Advanced season stats', '/stats/season/advanced', {'year': 2024, 'team': 'Michigan', 'endWeek': 2}),
+                ('Play-by-play', '/plays', {'year': 2024, 'week': 1, 'team': 'Michigan'}),
+            ]
+            _results = []
+            for _name, _path, _params in _tests:
+                try:
+                    _r = _cfbd_requests.get(
+                        'https://api.collegefootballdata.com' + _path,
+                        params=_params,
+                        headers={'Authorization': f'Bearer {_key}', 'Accept': 'application/json'},
+                        timeout=30,
+                    )
+                    if _r.status_code == 200:
+                        _payload = _r.json()
+                        _count = len(_payload) if isinstance(_payload, list) else None
+                        _status = 'Accessible' if _count is None or _count > 0 else 'Accessible; no sample records'
+                        _sample_fields = ', '.join(sorted(_payload[0].keys())[:12]) if isinstance(_payload, list) and _payload and isinstance(_payload[0], dict) else ''
+                    elif _r.status_code in (401, 403):
+                        _status = f'HTTP {_r.status_code}: authentication or entitlement issue'
+                        _count = None
+                        _sample_fields = ''
+                    elif _r.status_code == 429:
+                        _status = 'HTTP 429: rate or quota limit'
+                        _count = None
+                        _sample_fields = ''
+                    else:
+                        _status = f'HTTP {_r.status_code}: check endpoint parameters or availability'
+                        _count = None
+                        _sample_fields = ''
+                    _results.append({'Endpoint': _name, 'Result': _status, 'Sample records': _count, 'Sample field names': _sample_fields})
+                except Exception as _exc:
+                    _results.append({'Endpoint': _name, 'Result': f'Request failed: {type(_exc).__name__}', 'Sample records': None, 'Sample field names': ''})
+            st.dataframe(pd.DataFrame(_results), hide_index=True, use_container_width=True)
+            st.caption('A 200 response with no records does not establish historical coverage. This test does not download or train on advanced statistics.')
+# --- End Version 7 diagnostic ---

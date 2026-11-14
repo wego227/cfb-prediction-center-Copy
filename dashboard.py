@@ -47,11 +47,25 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
             test=details.season==2025
             if train.sum()<100 or test.sum()<10:raise ValueError('Not enough historical games to train/test.')
             backtest_model=fit_models(X.loc[train],details.loc[train])
-            metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
+            # The legacy V3 evaluator may expect a different feature schema.
+            # Do not let that optional baseline prevent the V4 evaluation.
+            try:
+                metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
+                baseline_warning=None
+            except ValueError as baseline_exc:
+                if 'feature names' not in str(baseline_exc).lower():
+                    raise
+                metrics=None
+                baseline_warning=(
+                    'Legacy V3 baseline could not be recalculated because its feature '
+                    'schema differs. V4 evaluation is unaffected. Original V3 '
+                    'baseline: 77.14% winners, 49.83% ATS (2025).'
+                )
             final_model, yearly_metrics, test_predictions=train_and_evaluate(X,details)
             st.session_state['history_auto']=history
             st.session_state['model_auto']=final_model
             st.session_state['training_metrics']=metrics
+            st.session_state['baseline_warning']=baseline_warning
             st.session_state['v4_metrics']=yearly_metrics
             st.session_state['v4_holdout']=test_predictions
             st.session_state['download_report']=report
@@ -59,7 +73,10 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
     except Exception as exc:
         st.error(f'Historical data/training failed: {exc}')
 if 'training_metrics' in st.session_state:
-    st.write('Held-out 2025 evaluation (trained on earlier seasons):',st.session_state['training_metrics'])
+    if st.session_state.get('baseline_warning'):
+        st.warning(st.session_state['baseline_warning'])
+    elif st.session_state['training_metrics'] is not None:
+        st.write('Held-out 2025 legacy evaluation:',st.session_state['training_metrics'])
     st.write('Download coverage:',st.session_state['download_report'])
     st.subheader('V4 market-relative season-forward evaluation')
     st.caption('2025 was not used for model fitting or probability dispersion. Earlier seasons are diagnostic, not independent untouched tests.')

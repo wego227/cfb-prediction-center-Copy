@@ -10,6 +10,7 @@ from v5_features import build_v5_features
 from market_model import train_and_evaluate, predict_upcoming
 from odds import fetch_draftkings
 from predictor import validate
+from cfb_team_matching import match_team
 
 st.title("🏈 2026 Game Predictions")
 st.warning("Experimental projections, not validated betting advice. Historical 2025 has been repeatedly examined.")
@@ -98,7 +99,50 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
             else:
                 advanced=None
             model,_,_,_,_=train_and_evaluate(x_old,d_old,features=list(x_old.columns))
+            # Map sportsbook display names to the exact CFBD names used in feature ledgers.
+            canonical=pd.unique(pd.concat([history.home_team,history.away_team],ignore_index=True)).tolist()
+            names=pd.unique(pd.concat([odds.home_team,odds.away_team],ignore_index=True)).tolist()
+            matches={name:match_team(name,canonical) for name in names}
+            match_report=pd.DataFrame([
+                {"sportsbook_team":name,"cfbd_team":matches[name][0],
+                 "match_method":matches[name][1],
+                 "suggestions_only":", ".join(matches[name][2])}
+                for name in names
+            ])
+            st.subheader("Team-name matching diagnostics")
+            st.dataframe(match_report,hide_index=True,use_container_width=True)
+            st.download_button("Download team-name matching report",
+                match_report.to_csv(index=False),"team_matching_report.csv","text/csv")
+            unmatched=match_report[match_report.cfbd_team.isna()]
+            if not unmatched.empty:
+                raise ValueError(
+                    f"{len(unmatched)} sportsbook team names could not be matched safely. "
+                    "Download the matching report and share it; predictions were BLOCKED to avoid false edges."
+                )
+            # Require actual 2026 team history rather than all-zero fallback.
+            team_counts=pd.concat([current.home_team,current.away_team]).value_counts()
             upcoming=odds[["date","home_team","away_team","home_spread"]].copy()
+            upcoming["odds_home_team"]=upcoming["home_team"]
+            upcoming["odds_away_team"]=upcoming["away_team"]
+            upcoming["home_team"]=upcoming["home_team"].map(lambda n:matches[n][0])
+            upcoming["away_team"]=upcoming["away_team"].map(lambda n:matches[n][0])
+            upcoming["home_2026_games"]=upcoming.home_team.map(team_counts).fillna(0).astype(int)
+            upcoming["away_2026_games"]=upcoming.away_team.map(team_counts).fillna(0).astype(int)
+            st.subheader("2026 completed-game coverage")
+            st.dataframe(upcoming[["odds_home_team","home_team","home_2026_games",
+                "odds_away_team","away_team","away_2026_games"]],hide_index=True,
+                use_container_width=True)
+            st.download_button("Download game-history coverage",
+                upcoming[["odds_home_team","home_team","home_2026_games",
+                "odds_away_team","away_team","away_2026_games"]].to_csv(index=False),
+                "team_2026_history_coverage.csv","text/csv")
+            insufficient=upcoming[(upcoming.home_2026_games==0)|(upcoming.away_2026_games==0)]
+            if not insufficient.empty:
+                raise ValueError(
+                    f"{len(insufficient)} games have a team with zero 2026 completed games "
+                    "in the CFBD spread-filtered history. Predictions BLOCKED; check coverage."
+                )
+            upcoming=upcoming[["date","home_team","away_team","home_spread","season","neutral_site"]] if "season" in upcoming.columns else upcoming
             upcoming["date"]=pd.to_datetime(upcoming.date,utc=True).dt.tz_localize(None)
             upcoming["season"]=2026
             upcoming["neutral_site"]=0
@@ -110,6 +154,13 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
                 features=pd.concat([features.reset_index(drop=True),
                     build_advanced_features(history,advanced,upcoming).reset_index(drop=True)],axis=1)
             result=predict_upcoming(model,features,upcoming)
+            # Keep CFBD canonical names for modeling, add original sportsbook labels for display.
+            display_map={matches[n][0]:n for n in names}
+            result["sportsbook_home_team"]=result.home_team.map(display_map)
+            result["sportsbook_away_team"]=result.away_team.map(display_map)
+            if len(result)>1 and result.model_vs_market_points.nunique()==1:
+                st.warning("All model adjustments are identical. This is suspicious; "
+                           "inspect the matching and game-history diagnostics before use.")
             result["market_favored_team"]=result.apply(
                 lambda r:r.home_team if r.home_spread<0 else (r.away_team if r.home_spread>0 else "Pick'em"),axis=1)
             result["projected_winner"]=result.apply(

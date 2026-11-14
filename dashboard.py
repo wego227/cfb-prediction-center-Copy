@@ -11,11 +11,14 @@ from cfbd_data import download_history
 from predictor import fit_models,evaluate
 from market_model import train_and_evaluate, predict_upcoming
 from v5_features import build_v5_features
+from v5_features import FEATURES as V5_FEATURES
 from joblib import dump
 import tempfile
 
 st.set_page_config(page_title='CFB Prediction Center',layout='wide')
 st.title('🏈 CFB Prediction Center')
+st.caption('Version 5.1 — consistent feature schema')
+
 st.caption('DraftKings line comparison • model research tool • no bets placed')
 st.warning('Research prototype: cover probabilities are approximate, parlay outcomes may be correlated, and no profitable betting edge has been established.')
 with st.sidebar:
@@ -50,6 +53,10 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
             backtest_model=fit_models(X.loc[train],details.loc[train])
             metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
             X5,details5=build_v5_features(history)
+            # Catch a stale V4 market_model.py before it can fail with missing columns.
+            from market_model import FEATURES as MARKET_FEATURES
+            if list(MARKET_FEATURES) != list(V5_FEATURES):
+                raise RuntimeError('Mixed model versions detected: market_model.py and v5_features.py disagree. Replace all three V5.1 files in GitHub and reboot Streamlit.')
             final_model, yearly_metrics, test_predictions=train_and_evaluate(X5,details5)
             st.session_state['history_auto']=history
             st.session_state['model_auto']=final_model

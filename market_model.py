@@ -8,6 +8,7 @@ from sklearn.linear_model import Ridge
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error,brier_score_loss
 from v5_features import FEATURES
+MODEL_VERSION = '5.1'
 
 def _new(kind):
     if kind=='ridge': return make_pipeline(StandardScaler(),Ridge(alpha=300.))

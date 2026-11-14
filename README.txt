@@ -1,24 +1,28 @@
-CFB VERSION 8: ADVANCED DATA AUDIT (non-destructive add-on)
+2026 Game Predictions — Team Name Matching Fix
 
-1. Extract this ZIP.
-2. In your GitHub repository, upload v8_audit.py to the repository ROOT.
-3. Create a folder named pages if it does not exist.
-4. Upload 8_Advanced_Data_Audit.py INSIDE pages/ (not in the root).
-   On GitHub web UI: Add file > Create new file > enter
-   pages/8_Advanced_Data_Audit.py and paste the supplied file contents,
-   or use Add file > Upload files while browsing the pages folder.
-5. Commit changes. Reboot Streamlit if necessary.
-6. Use the sidebar page navigation to open 8 Advanced Data Audit.
-7. If you have already trained V7 in this session, the audit will reuse its
-   history and advanced data; otherwise press Download 2019-2025 data for audit.
-8. Export and share v8_coverage.csv, v8_feature_diagnostics.csv,
-   and v8_ablation.csv.
+INSTALL (GitHub web UI)
+1. Extract ZIP.
+2. Upload cfb_team_matching.py to the repository ROOT (next to dashboard.py).
+3. Open the repository's pages folder and upload the replacement
+   9_2026_Game_Predictions.py, overwriting the old version.
+4. Commit both uploads and reboot Streamlit if necessary.
+5. Open 2026 Game Predictions, fetch current DraftKings odds, and run predictions.
 
-Keep existing dashboard.py, market_model.py, v5_features.py,
-cfbd_data.py, and v7_advanced.py unchanged.
+WHAT CHANGED
+- Converts sportsbook names such as "Miami Hurricanes" to CFBD's "Miami"
+  BEFORE constructing pregame features.
+- Uses exact matches, explicit aliases, or uniquely identifiable team-name
+  prefixes; never silently chooses an ambiguous fuzzy match.
+- Shows a team matching report and each team's 2026 completed-game count.
+- BLOCKS predictions when a team cannot be mapped or has zero eligible 2026
+  completed games; this avoids reporting default-feature projections as real picks.
+- Includes original sportsbook team names alongside canonical CFBD names.
 
-LIMITATIONS: This checks raw game/team coverage, pregame feature variation,
-a limited future-result exclusion smoke test, and fixed Ridge ablation.
-It does not prove all features are leakage-free, does not confirm that
-historical spread snapshots are consistently pregame, and does not establish
-any betting edge. 2025 has been inspected multiple times.
+IMPORTANT LIMITATIONS
+- Not yet tested with live CFBD data or your exact 2026 team-name inventory.
+  If blocked, share the matching report / screenshot so aliases can be fixed.
+- Games without historical lines are omitted by cfbd_data.py, so game counts
+  may understate actual games played.
+- Neutral-site flags still default to zero. Check manually.
+- 2025 was repeatedly inspected; no profitable betting edge has been shown.
+- Refresh odds: the page only predicts games that have not started yet.

@@ -12,12 +12,13 @@ from predictor import fit_models,evaluate
 from market_model import train_and_evaluate, predict_upcoming
 from v5_features import build_v5_features
 from v5_features import FEATURES as V5_FEATURES
+from v7_advanced import download_advanced, build_advanced_features, ADV_FEATURES
 from joblib import dump
 import tempfile
 
 st.set_page_config(page_title='CFB Prediction Center',layout='wide')
 st.title('🏈 CFB Prediction Center')
-st.caption('Version 6.0 — market baseline and model diagnostics')
+st.caption('Version 7.0 — advanced pregame efficiency features and market diagnostics')
 
 st.caption('DraftKings line comparison • model research tool • no bets placed')
 st.warning('Research prototype: cover probabilities are approximate, parlay outcomes may be correlated, and no profitable betting edge has been established.')
@@ -34,6 +35,8 @@ with st.sidebar:
     st.caption('Team names must match exactly across datasets; timestamps are UTC. Historical and current odds may differ by provider/time.')
 
 st.subheader('Historical data and model training')
+use_advanced=st.checkbox('Include advanced game-level efficiency statistics (2019–2025; ~112 extra API requests)',value=True)
+st.caption('Advanced data is added only after each game; 2025 is a repeatedly inspected diagnostic benchmark.')
 try:
     cfbd_key=st.secrets.get('CFBD_API_KEY','')
 except Exception:
@@ -53,11 +56,21 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
             backtest_model=fit_models(X.loc[train],details.loc[train])
             metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
             X5,details5=build_v5_features(history)
+            if use_advanced:
+                advanced,advanced_report=download_advanced(cfbd_key,range(2019,2026),progress=lambda x:status.info(x))
+                X7=pd.concat([X5.reset_index(drop=True),build_advanced_features(details5,advanced).reset_index(drop=True)],axis=1)
+                selected_features=list(V5_FEATURES)+list(ADV_FEATURES)
+            else:
+                advanced=None; advanced_report={"status":"Advanced features disabled"}
+                X7=X5
+                selected_features=list(V5_FEATURES)
             # Catch a stale V4 market_model.py before it can fail with missing columns.
             from market_model import FEATURES as MARKET_FEATURES
             if list(MARKET_FEATURES) != list(V5_FEATURES):
                 raise RuntimeError('Mixed model versions detected: market_model.py and v5_features.py disagree. Replace all three V5.1 files in GitHub and reboot Streamlit.')
-            final_model, yearly_metrics, test_predictions, candidate_table, provider_table=train_and_evaluate(X5,details5)
+            final_model, yearly_metrics, test_predictions, candidate_table, provider_table=train_and_evaluate(X7,details5,features=selected_features)
+            st.session_state['advanced_auto']=advanced
+            st.session_state['advanced_report']=advanced_report
             st.session_state['history_auto']=history
             st.session_state['model_auto']=final_model
             st.session_state['training_metrics']=metrics
@@ -72,7 +85,8 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
 if 'training_metrics' in st.session_state:
     st.write('Held-out 2025 evaluation (trained on earlier seasons):',st.session_state['training_metrics'])
     st.write('Download coverage:',st.session_state['download_report'])
-    st.subheader('V6 market-relative season-forward evaluation')
+    st.subheader('V7 market-relative season-forward evaluation')
+    st.write('Advanced data coverage:',st.session_state.get('advanced_report',{}))
     st.caption('2025 has already been inspected repeatedly: treat it as a diagnostic benchmark, not an untouched test.')
     st.subheader('Candidate comparison: selected using 2022–2024 only')
     st.dataframe(st.session_state['v6_candidates'],hide_index=True,use_container_width=True)
@@ -81,7 +95,7 @@ if 'training_metrics' in st.session_state:
     st.write('Selected model and validation:', {k:st.session_state['model_auto'].get(k) for k in ('selected_model','validation_mae_2022_2024')})
     st.caption('2025 was not used for model fitting or probability dispersion. Earlier seasons are diagnostic, not independent untouched tests.')
     st.dataframe(pd.json_normalize(st.session_state['v4_metrics']),use_container_width=True,hide_index=True)
-    st.download_button('Download V6 2025 benchmark predictions',st.session_state['v4_holdout'].to_csv(index=False),'v6_holdout_2025.csv','text/csv')
+    st.download_button('Download V7 2025 benchmark predictions',st.session_state['v4_holdout'].to_csv(index=False),'v7_holdout_2025.csv','text/csv')
     st.download_button('Download historical games CSV',st.session_state['history_auto'].to_csv(index=False),'cfb_games.csv','text/csv')
     with tempfile.NamedTemporaryFile(suffix='.joblib') as tmp:
         dump(st.session_state['model_auto'],tmp.name)
@@ -117,8 +131,13 @@ if (historical and model_file or ('history_auto' in st.session_state and 'model_
         if future.date.min() <= games.date.max():
             st.error('Upcoming games overlap or predate the last historical result. Use a strictly pregame history snapshot.')
             st.stop()
-        X=build_v5_features(games,future) if model.get('type') in ('market_residual_v5','market_residual_v6') else build_features(games,future)
-        pred=predict_upcoming(model,X,future) if model.get('type') in ('market_residual_v4','market_residual_v5','market_residual_v6') else predictions(model,X,future)
+        X=build_v5_features(games,future) if model.get('type') in ('market_residual_v5','market_residual_v6','market_residual_v7') else build_features(games,future)
+        if model.get('type')=='market_residual_v7' and any(c in model['features'] for c in ADV_FEATURES):
+            advanced=st.session_state.get('advanced_auto')
+            if advanced is None:
+                raise ValueError('Advanced historical data is not loaded. Train V7 with advanced stats in this session before predicting.')
+            X=pd.concat([X.reset_index(drop=True),build_advanced_features(games,advanced,future).reset_index(drop=True)],axis=1)
+        pred=predict_upcoming(model,X,future) if model.get('type') in ('market_residual_v4','market_residual_v5','market_residual_v6','market_residual_v7') else predictions(model,X,future)
         # For API timestamps use the date component consistently; do not mix local calendar dates.
         ranked=analyze(pred,odds)
         if ranked.empty:
@@ -137,51 +156,3 @@ if (historical and model_file or ('history_auto' in st.session_state and 'model_
 else:
     st.info('Upload completed-game history and a trained model, then fetch or upload DraftKings odds to analyze the slate.')
     st.markdown('**Weekly workflow:** refresh completed games → retrain/backtest outside the dashboard → fetch DraftKings lines → review matchups → export report. Verify injury and lineup news manually.')
-# --- Version 7: CFBD advanced data access diagnostic ---
-# Paste this block at the bottom of dashboard.py. Uses existing Streamlit secrets.
-import requests as _cfbd_requests
-
-with st.expander('Version 7 — Check advanced CFBD API access', expanded=False):
-    st.caption('Runs three small 2024 sample requests. Does not display or save your API key.')
-    if st.button('Check advanced data access', key='cfbd_v7_access_button'):
-        _key = st.secrets.get('CFBD_API_KEY', '')
-        if not _key:
-            st.error('CFBD_API_KEY is missing from Streamlit secrets.')
-        else:
-            _tests = [
-                ('Advanced game stats', '/stats/game/advanced', {'year': 2024, 'week': 1, 'team': 'Michigan'}),
-                ('Advanced season stats', '/stats/season/advanced', {'year': 2024, 'team': 'Michigan', 'endWeek': 2}),
-                ('Play-by-play', '/plays', {'year': 2024, 'week': 1, 'team': 'Michigan'}),
-            ]
-            _results = []
-            for _name, _path, _params in _tests:
-                try:
-                    _r = _cfbd_requests.get(
-                        'https://api.collegefootballdata.com' + _path,
-                        params=_params,
-                        headers={'Authorization': f'Bearer {_key}', 'Accept': 'application/json'},
-                        timeout=30,
-                    )
-                    if _r.status_code == 200:
-                        _payload = _r.json()
-                        _count = len(_payload) if isinstance(_payload, list) else None
-                        _status = 'Accessible' if _count is None or _count > 0 else 'Accessible; no sample records'
-                        _sample_fields = ', '.join(sorted(_payload[0].keys())[:12]) if isinstance(_payload, list) and _payload and isinstance(_payload[0], dict) else ''
-                    elif _r.status_code in (401, 403):
-                        _status = f'HTTP {_r.status_code}: authentication or entitlement issue'
-                        _count = None
-                        _sample_fields = ''
-                    elif _r.status_code == 429:
-                        _status = 'HTTP 429: rate or quota limit'
-                        _count = None
-                        _sample_fields = ''
-                    else:
-                        _status = f'HTTP {_r.status_code}: check endpoint parameters or availability'
-                        _count = None
-                        _sample_fields = ''
-                    _results.append({'Endpoint': _name, 'Result': _status, 'Sample records': _count, 'Sample field names': _sample_fields})
-                except Exception as _exc:
-                    _results.append({'Endpoint': _name, 'Result': f'Request failed: {type(_exc).__name__}', 'Sample records': None, 'Sample field names': ''})
-            st.dataframe(pd.DataFrame(_results), hide_index=True, use_container_width=True)
-            st.caption('A 200 response with no records does not establish historical coverage. This test does not download or train on advanced statistics.')
-# --- End Version 7 diagnostic ---

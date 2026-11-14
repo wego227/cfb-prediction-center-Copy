@@ -33,7 +33,7 @@ def download_history(api_key, start_year=2019, end_year=2025, progress=None):
             # CFBD spread is home-team spread (negative when home favored).
             rows.append({'date':g.get('startDate'),'season':year,'home_team':g['homeTeam'],'away_team':g['awayTeam'],
                 'home_score':g['homePoints'],'away_score':g['awayPoints'],'home_spread':float(selected['spread']),
-                'neutral_site':int(bool(g.get('neutralSite',False))),'spread_provider':selected.get('provider','unknown')})
+                'game_id':str(g.get('id')),'neutral_site':int(bool(g.get('neutralSite',False))),'spread_provider':selected.get('provider','unknown')})
             count+=1
         seasons.append((year,count))
     df=pd.DataFrame(rows)

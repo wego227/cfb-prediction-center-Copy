@@ -1,4 +1,4 @@
-"""V6 market-residual diagnostics. Model selection uses 2022-24 only.
+"""V7 market-residual diagnostics. Model selection uses 2022-24 only.
 2025 is a previously inspected benchmark, NOT an untouched test.
 """
 import numpy as np
@@ -11,7 +11,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, brier_score_loss
 from v5_features import FEATURES
 
-MODEL_VERSION = '6.0'
+MODEL_VERSION = '7.0'
 CANDIDATES = ('ridge_1','ridge_10','ridge_100','ridge_300','ridge_1000','boosting')
 
 def _new(kind):
@@ -22,14 +22,14 @@ def _new(kind):
                 l2_regularization=100.,min_samples_leaf=45,random_state=42)
     raise ValueError(f'Unknown candidate {kind}')
 
-def _forward(X,d,year,kind):
+def _forward(X,d,year,kind,features):
     tr=d.season<year; te=d.season==year
     if tr.sum()<100 or te.sum()<10: return None
     target=(d.home_score-d.away_score+d.home_spread).to_numpy(dtype=float)
     m=_new(kind)
-    m.fit(X.loc[tr,FEATURES],target[tr.to_numpy()])
+    m.fit(X.loc[tr,features],target[tr.to_numpy()])
     sub=d.loc[te].copy()
-    sub['pred_residual']=m.predict(X.loc[te,FEATURES])
+    sub['pred_residual']=m.predict(X.loc[te,features])
     sub['actual_residual']=target[te.to_numpy()]
     sub['eval_season']=year
     return sub
@@ -80,13 +80,14 @@ def _provider_report(f):
             'pred_residual_sd':metrics['pred_residual_sd']})
     return pd.DataFrame(records)
 
-def train_and_evaluate(X,details):
-    if list(X.columns)!=list(FEATURES):
-        raise ValueError('V6 feature mismatch. Replace market_model.py and v5_features.py together.')
+def train_and_evaluate(X,details,features=None):
+    features=list(FEATURES) if features is None else list(features)
+    if list(X.columns)!=features:
+        raise ValueError('V7 feature mismatch. Replace market_model.py and v5_features.py together.')
     if 2025 not in set(details.season): raise ValueError('2025 benchmark season missing')
     candidate_rows=[]; frames={}
     for kind in CANDIDATES:
-        valid=[_forward(X,details,year,kind) for year in (2022,2023,2024)]
+        valid=[_forward(X,details,year,kind,features) for year in (2022,2023,2024)]
         valid=[f for f in valid if f is not None]
         if not valid: raise ValueError('Insufficient 2022-24 validation games')
         joined=pd.concat(valid,ignore_index=True)
@@ -99,7 +100,7 @@ def train_and_evaluate(X,details):
     chosen=str(candidates.iloc[0]['model'])
     calibration=frames[chosen]
     sigma=_sigma(calibration)
-    holdout=_forward(X,details,2025,chosen)
+    holdout=_forward(X,details,2025,chosen,features)
     if holdout is None: raise ValueError('Insufficient 2025 games')
     yearly=[]
     for year in (2023,2024):
@@ -109,9 +110,9 @@ def train_and_evaluate(X,details):
     yearly.append({'season':2025,'model':chosen,**_metrics(holdout,sigma)})
     target=(details.home_score-details.away_score+details.home_spread).to_numpy(dtype=float)
     final=_new(chosen)
-    final.fit(X[FEATURES],target)
-    model={'type':'market_residual_v6','residual_model':final,'sigma':sigma,
-        'features':list(FEATURES),'selected_model':chosen,
+    final.fit(X[features],target)
+    model={'type':'market_residual_v7','residual_model':final,'sigma':sigma,
+        'features':features,'selected_model':chosen,
         'validation_mae_2022_2024':dict(zip(candidates.model,candidates.validation_margin_MAE.round(3))),
         'last_training_date':str(details.date.max()),
         'version':MODEL_VERSION}

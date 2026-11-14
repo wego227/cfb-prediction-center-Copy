@@ -17,7 +17,7 @@ import tempfile
 
 st.set_page_config(page_title='CFB Prediction Center',layout='wide')
 st.title('🏈 CFB Prediction Center')
-st.caption('Version 5.1 — consistent feature schema')
+st.caption('Version 6.0 — market baseline and model diagnostics')
 
 st.caption('DraftKings line comparison • model research tool • no bets placed')
 st.warning('Research prototype: cover probabilities are approximate, parlay outcomes may be correlated, and no profitable betting edge has been established.')
@@ -57,11 +57,13 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
             from market_model import FEATURES as MARKET_FEATURES
             if list(MARKET_FEATURES) != list(V5_FEATURES):
                 raise RuntimeError('Mixed model versions detected: market_model.py and v5_features.py disagree. Replace all three V5.1 files in GitHub and reboot Streamlit.')
-            final_model, yearly_metrics, test_predictions=train_and_evaluate(X5,details5)
+            final_model, yearly_metrics, test_predictions, candidate_table, provider_table=train_and_evaluate(X5,details5)
             st.session_state['history_auto']=history
             st.session_state['model_auto']=final_model
             st.session_state['training_metrics']=metrics
             st.session_state['v4_metrics']=yearly_metrics
+            st.session_state['v6_candidates']=candidate_table
+            st.session_state['v6_providers']=provider_table
             st.session_state['v4_holdout']=test_predictions
             st.session_state['download_report']=report
         status.success('History downloaded and model trained. This is a research baseline, not a validated betting edge.')
@@ -70,11 +72,16 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
 if 'training_metrics' in st.session_state:
     st.write('Held-out 2025 evaluation (trained on earlier seasons):',st.session_state['training_metrics'])
     st.write('Download coverage:',st.session_state['download_report'])
-    st.subheader('V5 market-relative season-forward evaluation')
+    st.subheader('V6 market-relative season-forward evaluation')
+    st.caption('2025 has already been inspected repeatedly: treat it as a diagnostic benchmark, not an untouched test.')
+    st.subheader('Candidate comparison: selected using 2022–2024 only')
+    st.dataframe(st.session_state['v6_candidates'],hide_index=True,use_container_width=True)
+    st.subheader('2025 provider breakdown')
+    st.dataframe(st.session_state['v6_providers'],hide_index=True,use_container_width=True)
     st.write('Selected model and validation:', {k:st.session_state['model_auto'].get(k) for k in ('selected_model','validation_mae_2022_2024')})
     st.caption('2025 was not used for model fitting or probability dispersion. Earlier seasons are diagnostic, not independent untouched tests.')
     st.dataframe(pd.json_normalize(st.session_state['v4_metrics']),use_container_width=True,hide_index=True)
-    st.download_button('Download V5 2025 holdout predictions',st.session_state['v4_holdout'].to_csv(index=False),'v5_holdout_2025.csv','text/csv')
+    st.download_button('Download V6 2025 benchmark predictions',st.session_state['v4_holdout'].to_csv(index=False),'v6_holdout_2025.csv','text/csv')
     st.download_button('Download historical games CSV',st.session_state['history_auto'].to_csv(index=False),'cfb_games.csv','text/csv')
     with tempfile.NamedTemporaryFile(suffix='.joblib') as tmp:
         dump(st.session_state['model_auto'],tmp.name)
@@ -110,8 +117,8 @@ if (historical and model_file or ('history_auto' in st.session_state and 'model_
         if future.date.min() <= games.date.max():
             st.error('Upcoming games overlap or predate the last historical result. Use a strictly pregame history snapshot.')
             st.stop()
-        X=build_v5_features(games,future) if model.get('type')=='market_residual_v5' else build_features(games,future)
-        pred=predict_upcoming(model,X,future) if model.get('type') in ('market_residual_v4','market_residual_v5') else predictions(model,X,future)
+        X=build_v5_features(games,future) if model.get('type') in ('market_residual_v5','market_residual_v6') else build_features(games,future)
+        pred=predict_upcoming(model,X,future) if model.get('type') in ('market_residual_v4','market_residual_v5','market_residual_v6') else predictions(model,X,future)
         # For API timestamps use the date component consistently; do not mix local calendar dates.
         ranked=analyze(pred,odds)
         if ranked.empty:

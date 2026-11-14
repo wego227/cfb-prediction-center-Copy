@@ -32,7 +32,7 @@ def walk_forward(X, details, test_seasons=(2022,2023,2024,2025)):
         if train.sum()<100 or test.sum()<10: continue
         fitted=_fit(X.loc[train], details.loc[train])
         sub=details.loc[test].copy()
-        sub['pred_residual']=fitted.predict(X.loc[test])
+        sub['pred_residual']=fitted.predict(X.loc[test, RESIDUAL_FEATURES])
         sub['actual_residual']=sub.home_score-sub.away_score+sub.home_spread
         sub['eval_season']=season
         frames.append(sub)

@@ -10,6 +10,7 @@ from analysis import analyze,parlays
 from cfbd_data import download_history
 from predictor import fit_models,evaluate
 from market_model import train_and_evaluate, predict_upcoming
+from v5_features import build_v5_features
 from joblib import dump
 import tempfile
 
@@ -47,25 +48,12 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
             test=details.season==2025
             if train.sum()<100 or test.sum()<10:raise ValueError('Not enough historical games to train/test.')
             backtest_model=fit_models(X.loc[train],details.loc[train])
-            # The legacy V3 evaluator may expect a different feature schema.
-            # Do not let that optional baseline prevent the V4 evaluation.
-            try:
-                metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
-                baseline_warning=None
-            except ValueError as baseline_exc:
-                if 'feature names' not in str(baseline_exc).lower():
-                    raise
-                metrics=None
-                baseline_warning=(
-                    'Legacy V3 baseline could not be recalculated because its feature '
-                    'schema differs. V4 evaluation is unaffected. Original V3 '
-                    'baseline: 77.14% winners, 49.83% ATS (2025).'
-                )
-            final_model, yearly_metrics, test_predictions=train_and_evaluate(X,details)
+            metrics,_=evaluate(backtest_model,X.loc[test],details.loc[test])
+            X5,details5=build_v5_features(history)
+            final_model, yearly_metrics, test_predictions=train_and_evaluate(X5,details5)
             st.session_state['history_auto']=history
             st.session_state['model_auto']=final_model
             st.session_state['training_metrics']=metrics
-            st.session_state['baseline_warning']=baseline_warning
             st.session_state['v4_metrics']=yearly_metrics
             st.session_state['v4_holdout']=test_predictions
             st.session_state['download_report']=report
@@ -73,15 +61,13 @@ if st.button('Download history and train model', disabled=not bool(cfbd_key)):
     except Exception as exc:
         st.error(f'Historical data/training failed: {exc}')
 if 'training_metrics' in st.session_state:
-    if st.session_state.get('baseline_warning'):
-        st.warning(st.session_state['baseline_warning'])
-    elif st.session_state['training_metrics'] is not None:
-        st.write('Held-out 2025 legacy evaluation:',st.session_state['training_metrics'])
+    st.write('Held-out 2025 evaluation (trained on earlier seasons):',st.session_state['training_metrics'])
     st.write('Download coverage:',st.session_state['download_report'])
-    st.subheader('V4 market-relative season-forward evaluation')
+    st.subheader('V5 market-relative season-forward evaluation')
+    st.write('Selected model and validation:', {k:st.session_state['model_auto'].get(k) for k in ('selected_model','validation_mae_2022_2024')})
     st.caption('2025 was not used for model fitting or probability dispersion. Earlier seasons are diagnostic, not independent untouched tests.')
     st.dataframe(pd.json_normalize(st.session_state['v4_metrics']),use_container_width=True,hide_index=True)
-    st.download_button('Download V4 2025 holdout predictions',st.session_state['v4_holdout'].to_csv(index=False),'v4_holdout_2025.csv','text/csv')
+    st.download_button('Download V5 2025 holdout predictions',st.session_state['v4_holdout'].to_csv(index=False),'v5_holdout_2025.csv','text/csv')
     st.download_button('Download historical games CSV',st.session_state['history_auto'].to_csv(index=False),'cfb_games.csv','text/csv')
     with tempfile.NamedTemporaryFile(suffix='.joblib') as tmp:
         dump(st.session_state['model_auto'],tmp.name)
@@ -117,8 +103,8 @@ if (historical and model_file or ('history_auto' in st.session_state and 'model_
         if future.date.min() <= games.date.max():
             st.error('Upcoming games overlap or predate the last historical result. Use a strictly pregame history snapshot.')
             st.stop()
-        X=build_features(games,future)
-        pred=predict_upcoming(model,X,future) if model.get('type')=='market_residual_v4' else predictions(model,X,future)
+        X=build_v5_features(games,future) if model.get('type')=='market_residual_v5' else build_features(games,future)
+        pred=predict_upcoming(model,X,future) if model.get('type') in ('market_residual_v4','market_residual_v5') else predictions(model,X,future)
         # For API timestamps use the date component consistently; do not mix local calendar dates.
         ranked=analyze(pred,odds)
         if ranked.empty:

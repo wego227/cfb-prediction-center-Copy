@@ -11,6 +11,7 @@ from market_model import train_and_evaluate, predict_upcoming
 from odds import fetch_draftkings
 from predictor import validate
 from cfb_team_matching import match_team
+from prediction_tracker import snapshot
 
 # Disk-backed Streamlit caching prevents repeated multi-year CFBD downloads
 # on ordinary widget reruns and app restarts. Manually clear when data needs refreshing.
@@ -21,6 +22,15 @@ def cached_history(api_key, start_year, end_year):
 @st.cache_data(persist="disk", show_spinner=False)
 def cached_advanced(api_key, years):
     return download_advanced(api_key, list(years))
+
+# The active season refreshes every six hours; past seasons stay cached.
+@st.cache_data(ttl=21600, show_spinner=False)
+def current_season_history(api_key, year):
+    return download_history(api_key, year, year)
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def current_season_advanced(api_key, year):
+    return download_advanced(api_key, [year])
 
 st.title("🏈 2026 Game Predictions")
 st.warning("Experimental projections, not validated betting advice. Historical 2025 has been repeatedly examined.")
@@ -36,10 +46,12 @@ if not key:
 today=datetime.now(ZoneInfo("America/New_York")).date()
 date=st.date_input("Games scheduled for (Eastern Time)", value=today)
 use_advanced=st.checkbox("Include V7 advanced statistics",value=True)
-st.caption("Historical downloads are cached on disk after the first successful request. New 2026 results require a cache refresh.")
+st.caption("2019–2025 history uses a persistent disk cache. Active-season games and advanced stats refresh after six hours; you can force a refresh below.")
 if st.button("Clear CFBD cache (only when updating data)"):
     cached_history.clear()
     cached_advanced.clear()
+    current_season_history.clear()
+    current_season_advanced.clear()
     st.success("CFBD cache cleared. The next prediction run will download data again and consume API quota.")
 
 st.subheader("1. Load 2026 odds")
@@ -93,7 +105,7 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
         with st.spinner("Downloading historical data, updating 2026 team statistics, and fitting V7…"):
             # Historical model fitting is restricted to 2019–2025.
             old,_=cached_history(key,2019,2025)
-            current,_=cached_history(key,2026,2026)
+            current,_=current_season_history(key,2026)
             old=validate(old)
             current=validate(current)
             # Never include a result at or after the earliest prediction kickoff.
@@ -104,7 +116,7 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
             x_old,d_old=build_v5_features(old)
             if use_advanced:
                 adv_old,_=cached_advanced(key,tuple(range(2019,2026)))
-                adv_2026,_=cached_advanced(key,(2026,))
+                adv_2026,_=current_season_advanced(key,2026)
                 # Restrict 2026 advanced rows to known, completed, eligible games.
                 adv_2026=adv_2026.loc[adv_2026.game_id.astype(str).isin(current.game_id.astype(str))].copy()
                 advanced=pd.concat([adv_old,adv_2026],ignore_index=True)
@@ -201,6 +213,7 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
             result["quality_status"]=result.apply(lambda r:"CAUTION: <3 games" if min(r.home_2026_games,r.away_2026_games)<3 else "PASS",axis=1)
             result["advanced_enabled"]=use_advanced
             st.session_state["today_predictions"]=result
+            st.session_state["today_prediction_snapshot"]=snapshot(result)
             st.session_state["today_prediction_date"]=date
             status.success("Pregame predictions generated.")
     except Exception as exc:
@@ -215,6 +228,11 @@ if "today_predictions" in st.session_state:
     st.dataframe(result,hide_index=True,use_container_width=True)
     st.download_button("Download predictions CSV",result.to_csv(index=False),
         f"cfb_predictions_{st.session_state['today_prediction_date']}.csv","text/csv")
+    if st.session_state.get("today_prediction_date")==date and "today_prediction_snapshot" in st.session_state:
+        saved=st.session_state["today_prediction_snapshot"]
+        st.download_button("Download timestamped pregame snapshot (for V10 tracker)",
+            saved.to_csv(index=False).encode(),f"cfb_pregame_snapshot_{date}.csv","text/csv")
+        st.caption("Save this file before kickoff. It preserves the original predictions and lines for later grading.")
     st.caption("Model edge is the predicted scoring-margin adjustment to the market, not a proven profitable edge. Neutral-site flags default to zero; verify these and exact team names.")
 
 if st.session_state.get("today_quality_date")==date and "today_quality_report" in st.session_state:

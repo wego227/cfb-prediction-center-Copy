@@ -55,6 +55,7 @@ ALIASES = {
     "middle tennessee blue raiders": "Middle Tennessee",
     "southern miss golden eagles": "Southern Mississippi",
     "southern mississippi golden eagles": "Southern Mississippi",
+    "southern miss golden eagles": "Southern Mississippi",
     "army black knights": "Army",
     "navy midshipmen": "Navy",
     "air force falcons": "Air Force",
@@ -104,6 +105,10 @@ def match_team(display, canonical):
         found=norm_to_names.get(norm(alias),[])
         if len(found)==1:
             return found[0],"alias",[]
+    # Avoid prefix collisions: Southern Mississippi must never map to "Southern".
+    # If the intended FBS name is missing from CFBD history, block prediction.
+    if key.startswith("southern mississippi ") or key.startswith("southern miss "):
+        return None,"unmatched",["Southern Mississippi (missing from CFBD history)"]
     # Odds feed typically appends a mascot: "Iowa State Cyclones" -> "Iowa State".
     # Require unique longest canonical prefix; don't silently conflate Miami/Miami (OH).
     prefixes=[n for n in names if key.startswith(norm(n)+" ")]

@@ -100,6 +100,8 @@ else:
 st.subheader("2. Build pregame predictions")
 if st.button("Download 2026 results and generate predictions",disabled=odds is None or odds.empty):
     try:
+        st.session_state.pop("today_predictions",None)
+        st.session_state.pop("today_prediction_snapshot",None)
         status=st.empty()
         cutoff=odds["_kickoff_utc"].min().tz_localize(None)
         with st.spinner("Downloading historical data, updating 2026 team statistics, and fitting V7…"):
@@ -141,10 +143,25 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
                 match_report.to_csv(index=False),"team_matching_report.csv","text/csv")
             unmatched=match_report[match_report.cfbd_team.isna()]
             if not unmatched.empty:
-                raise ValueError(
-                    f"{len(unmatched)} sportsbook team names could not be matched safely. "
-                    "Download the matching report and share it; predictions were BLOCKED to avoid false edges."
+                excluded_names=set(unmatched.sportsbook_team)
+                excluded_games=odds.loc[
+                    odds.home_team.isin(excluded_names) | odds.away_team.isin(excluded_names)
+                ].copy()
+                st.warning(
+                    f"Excluded {len(excluded_games)} matchup(s) because {len(unmatched)} "
+                    "sportsbook team name(s) could not be matched safely. "
+                    "No prediction will be produced for these games."
                 )
+                st.dataframe(excluded_games[["date","home_team","away_team","home_spread"]],
+                             hide_index=True,use_container_width=True)
+                st.download_button("Download excluded matchups",
+                    excluded_games[["date","home_team","away_team","home_spread"]].to_csv(index=False),
+                    f"cfb_excluded_matchups_{date}.csv","text/csv")
+                odds=odds.loc[~(
+                    odds.home_team.isin(excluded_names) | odds.away_team.isin(excluded_names)
+                )].copy()
+                if odds.empty:
+                    raise ValueError("No safely matched games remain. Predictions blocked.")
             # Require actual 2026 team history rather than all-zero fallback.
             team_counts=pd.concat([current.home_team,current.away_team]).value_counts()
             upcoming=odds[["date","home_team","away_team","home_spread"]].copy()

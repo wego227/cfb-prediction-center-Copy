@@ -12,6 +12,16 @@ from odds import fetch_draftkings
 from predictor import validate
 from cfb_team_matching import match_team
 
+# Disk-backed Streamlit caching prevents repeated multi-year CFBD downloads
+# on ordinary widget reruns and app restarts. Manually clear when data needs refreshing.
+@st.cache_data(persist="disk", show_spinner=False)
+def cached_history(api_key, start_year, end_year):
+    return download_history(api_key, start_year, end_year)
+
+@st.cache_data(persist="disk", show_spinner=False)
+def cached_advanced(api_key, years):
+    return download_advanced(api_key, list(years))
+
 st.title("🏈 2026 Game Predictions")
 st.warning("Experimental projections, not validated betting advice. Historical 2025 has been repeatedly examined.")
 st.caption("Uses 2019–2025 to fit the V7 model; uses completed 2026 games only for pregame team features. No 2026 outcome is used to fit the model.")
@@ -26,7 +36,11 @@ if not key:
 today=datetime.now(ZoneInfo("America/New_York")).date()
 date=st.date_input("Games scheduled for (Eastern Time)", value=today)
 use_advanced=st.checkbox("Include V7 advanced statistics",value=True)
-st.caption("The first download can take several minutes and may use substantial CFBD API quota.")
+st.caption("Historical downloads are cached on disk after the first successful request. New 2026 results require a cache refresh.")
+if st.button("Clear CFBD cache (only when updating data)"):
+    cached_history.clear()
+    cached_advanced.clear()
+    st.success("CFBD cache cleared. The next prediction run will download data again and consume API quota.")
 
 st.subheader("1. Load 2026 odds")
 source=st.radio("Odds source",["DraftKings via The Odds API","Upload odds CSV"],horizontal=True)
@@ -78,8 +92,8 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
         cutoff=odds["_kickoff_utc"].min().tz_localize(None)
         with st.spinner("Downloading historical data, updating 2026 team statistics, and fitting V7…"):
             # Historical model fitting is restricted to 2019–2025.
-            old,_=download_history(key,2019,2025,progress=lambda msg:status.info(msg))
-            current,_=download_history(key,2026,2026,progress=lambda msg:status.info(msg))
+            old,_=cached_history(key,2019,2025)
+            current,_=cached_history(key,2026,2026)
             old=validate(old)
             current=validate(current)
             # Never include a result at or after the earliest prediction kickoff.
@@ -89,8 +103,8 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
             history=pd.concat([old,current],ignore_index=True).sort_values("date").reset_index(drop=True)
             x_old,d_old=build_v5_features(old)
             if use_advanced:
-                adv_old,_=download_advanced(key,range(2019,2026),progress=lambda msg:status.info(msg))
-                adv_2026,_=download_advanced(key,[2026],progress=lambda msg:status.info(msg))
+                adv_old,_=cached_advanced(key,tuple(range(2019,2026)))
+                adv_2026,_=cached_advanced(key,(2026,))
                 # Restrict 2026 advanced rows to known, completed, eligible games.
                 adv_2026=adv_2026.loc[adv_2026.game_id.astype(str).isin(current.game_id.astype(str))].copy()
                 advanced=pd.concat([adv_old,adv_2026],ignore_index=True)
@@ -128,6 +142,18 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
             upcoming["away_team"]=upcoming["away_team"].map(lambda n:matches[n][0])
             upcoming["home_2026_games"]=upcoming.home_team.map(team_counts).fillna(0).astype(int)
             upcoming["away_2026_games"]=upcoming.away_team.map(team_counts).fillna(0).astype(int)
+            # Keep a quality report available even if a subsequent validation blocks predictions.
+            quality=upcoming[["odds_home_team","home_team","home_2026_games",
+                "odds_away_team","away_team","away_2026_games"]].copy()
+            quality["home_match_method"]=quality.odds_home_team.map(lambda n:matches[n][1])
+            quality["away_match_method"]=quality.odds_away_team.map(lambda n:matches[n][1])
+            quality["quality_status"]=quality.apply(lambda r:
+                "BLOCKED: no 2026 history" if min(r.home_2026_games,r.away_2026_games)==0
+                else "CAUTION: <3 games" if min(r.home_2026_games,r.away_2026_games)<3
+                else "PASS: team history present",axis=1)
+            quality["advanced_requested"]=use_advanced
+            st.session_state["today_quality_report"]=quality
+            st.session_state["today_quality_date"]=date
             st.subheader("2026 completed-game coverage")
             st.dataframe(upcoming[["odds_home_team","home_team","home_2026_games",
                 "odds_away_team","away_team","away_2026_games"]],hide_index=True,
@@ -168,6 +194,11 @@ if st.button("Download 2026 results and generate predictions",disabled=odds is N
             result["model_favored_ATS"]=result.apply(
                 lambda r:r.home_team if r.model_vs_market_points>0 else (r.away_team if r.model_vs_market_points<0 else "No edge"),axis=1)
             result["2026_completed_games_used"]=len(current)
+            # Model outputs and diagnostics share the same validated matchup ordering.
+            coverage=quality.set_index(["home_team","away_team"])
+            result["home_2026_games"]=result.apply(lambda r:int(coverage.loc[(r.home_team,r.away_team),"home_2026_games"]),axis=1)
+            result["away_2026_games"]=result.apply(lambda r:int(coverage.loc[(r.home_team,r.away_team),"away_2026_games"]),axis=1)
+            result["quality_status"]=result.apply(lambda r:"CAUTION: <3 games" if min(r.home_2026_games,r.away_2026_games)<3 else "PASS",axis=1)
             result["advanced_enabled"]=use_advanced
             st.session_state["today_predictions"]=result
             st.session_state["today_prediction_date"]=date
@@ -185,3 +216,11 @@ if "today_predictions" in st.session_state:
     st.download_button("Download predictions CSV",result.to_csv(index=False),
         f"cfb_predictions_{st.session_state['today_prediction_date']}.csv","text/csv")
     st.caption("Model edge is the predicted scoring-margin adjustment to the market, not a proven profitable edge. Neutral-site flags default to zero; verify these and exact team names.")
+
+if st.session_state.get("today_quality_date")==date and "today_quality_report" in st.session_state:
+    st.subheader("4. Prediction-quality report")
+    quality=st.session_state["today_quality_report"]
+    st.dataframe(quality,hide_index=True,use_container_width=True)
+    st.download_button("Download prediction-quality report",quality.to_csv(index=False),
+        f"cfb_prediction_quality_{date}.csv","text/csv")
+    st.caption("Counts include only completed 2026 games with CFBD historical spreads before the earliest selected kickoff. This is a coverage check, not model validation. Historical model fit still uses 2019–2025.")
